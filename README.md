@@ -22,6 +22,10 @@ $env:DRY_RUN = "1"   # print alerts instead of pushing
 python tracker.py
 ```
 
+### Viewing the data
+
+`python report.py` builds `data/report.html` (cheapest fare per run chart plus a sortable-by-price itinerary table with Google Flights links) and opens it in your browser. Use `--no-open` to skip opening. If the tracker runs on GitHub Actions, `git pull` first to get the latest database.
+
 ### GitHub Actions (cron)
 
 Add repo secrets `SERPAPI_KEY` and `NTFY_TOPIC`. `.github/workflows/track.yml` runs twice daily and commits the
