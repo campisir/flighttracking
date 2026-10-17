@@ -1,54 +1,70 @@
-"""Build data/report.html from the price database and open it in the browser."""
+"""Build the mobile-friendly HTML history report from SQLite."""
 import sqlite3
 import sys
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timezone
 from html import escape
 
-from tracker import DB_PATH
+from tracker import DB_PATH, init_db
 
 OUT = DB_PATH.parent / "report.html"
-COLORS = {"PNS": "#2563eb", "TPA": "#16a34a", "MCO": "#dc2626"}
 
 LATEST = """
 SELECT * FROM (
   SELECT *,
     ROW_NUMBER() OVER w AS rn,
-    MIN(price) OVER (PARTITION BY origin, dest, start_date, end_date) AS low,
-    COUNT(*) OVER (PARTITION BY origin, dest, start_date, end_date) AS n
+    MIN(price) OVER (PARTITION BY origin, dest, start_date, end_date, itinerary_type) AS low,
+    COUNT(*) OVER (PARTITION BY origin, dest, start_date, end_date, itinerary_type) AS n
   FROM observations
-  WINDOW w AS (PARTITION BY origin, dest, start_date, end_date ORDER BY observed_at DESC)
-) WHERE rn = 1 ORDER BY price
+  WINDOW w AS (
+    PARTITION BY origin, dest, start_date, end_date, itinerary_type
+    ORDER BY observed_at DESC, id DESC
+  )
+) WHERE rn = 1 ORDER BY COALESCE(verified_price, price), price
 """
 
 
 def chart(series: dict[str, list[tuple[datetime, float]]]) -> str:
-    pts = [p for s in series.values() for p in s]
-    if not pts:
-        return ""
-    w, h, pad = 900, 300, 50
-    t0, t1 = min(t for t, _ in pts), max(t for t, _ in pts)
-    lo, hi = min(p for _, p in pts), max(p for _, p in pts)
-    span_t, span_p = (t1 - t0).total_seconds() or 1, (hi - lo) or 1
+    points = [point for values in series.values() for point in values]
+    if not points:
+        return "<p>No repeated itinerary observations yet.</p>"
+    width, height, pad = 900, 300, 55
+    start, end = min(t for t, _ in points), max(t for t, _ in points)
+    low, high = min(price for _, price in points), max(price for _, price in points)
+    time_span, price_span = (end - start).total_seconds() or 1, (high - low) or 1
 
-    def xy(t, p):
-        return pad + (t - t0).total_seconds() / span_t * (w - 2 * pad), h - pad - (p - lo) / span_p * (h - 2 * pad)
+    def xy(timestamp, price):
+        return (pad + (timestamp - start).total_seconds() / time_span * (width - 2 * pad),
+                height - pad - (price - low) / price_span * (height - 2 * pad))
 
-    out = [f'<svg viewBox="0 0 {w} {h}" width="100%" style="max-width:{w}px">']
-    for i in range(5):
-        p = lo + span_p * i / 4
-        y = xy(t0, p)[1]
-        out.append(f'<line x1="{pad}" x2="{w - pad}" y1="{y:.0f}" y2="{y:.0f}" stroke="#e5e7eb"/>'
-                   f'<text x="{pad - 6}" y="{y + 4:.0f}" font-size="11" text-anchor="end">${p:,.0f}</text>')
-    out.append(f'<text x="{pad}" y="{h - 20}" font-size="11">{t0:%b %d %H:%M}</text>'
-               f'<text x="{w - pad}" y="{h - 20}" font-size="11" text-anchor="end">{t1:%b %d %H:%M}</text>')
-    for i, (origin, s) in enumerate(sorted(series.items())):
-        c = COLORS.get(origin, "#6b7280")
-        xs = [xy(t, p) for t, p in s]
-        out.append(f'<polyline fill="none" stroke="{c}" stroke-width="2" points="{" ".join(f"{x:.0f},{y:.0f}" for x, y in xs)}"/>')
-        out += [f'<circle cx="{x:.0f}" cy="{y:.0f}" r="3" fill="{c}"/>' for x, y in xs]
-        out.append(f'<text x="{pad + 10 + i * 60}" y="16" font-size="12" fill="{c}" font-weight="bold">{escape(origin)}</text>')
-    return "".join(out) + "</svg>"
+    colors = ("#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2")
+    output = [f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="Repeated itinerary price trends">']
+    for index in range(5):
+        price = low + price_span * index / 4
+        y = xy(start, price)[1]
+        output.append(
+            f'<line x1="{pad}" x2="{width-pad}" y1="{y:.0f}" y2="{y:.0f}" stroke="#e5e7eb"/>'
+            f'<text x="{pad-6}" y="{y+4:.0f}" text-anchor="end">${price:,.0f}</text>'
+        )
+    for index, (label, values) in enumerate(series.items()):
+        color = colors[index % len(colors)]
+        coordinates = [xy(timestamp, price) for timestamp, price in values]
+        polyline = " ".join(f"{x:.0f},{y:.0f}" for x, y in coordinates)
+        output.append(f'<polyline fill="none" stroke="{color}" stroke-width="2" points="{polyline}"/>')
+        output.extend(f'<circle cx="{x:.0f}" cy="{y:.0f}" r="3" fill="{color}"/>' for x, y in coordinates)
+    output.append(
+        f'<text x="{pad}" y="{height-14}">{start:%b %d}</text>'
+        f'<text x="{width-pad}" y="{height-14}" text-anchor="end">{end:%b %d}</text></svg>'
+    )
+    legend = "".join(
+        f'<span style="color:{colors[i % len(colors)]}">{escape(label)}</span>'
+        for i, label in enumerate(series)
+    )
+    return f'<div class="chart">{"".join(output)}</div><div class="legend">{legend}</div>'
+
+
+def esc(value) -> str:
+    return escape(str(value)) if value is not None else ""
 
 
 def main() -> int:
@@ -57,35 +73,111 @@ def main() -> int:
         return 1
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
+    init_db(db)
     rows = db.execute(LATEST).fetchall()
-    series: dict[str, list] = {}
-    for r in db.execute("SELECT observed_at, origin, MIN(price) p FROM observations GROUP BY observed_at, origin ORDER BY observed_at"):
-        series.setdefault(r["origin"], []).append((datetime.fromisoformat(r["observed_at"]), r["p"]))
-    runs = db.execute("SELECT COUNT(DISTINCT observed_at) FROM observations").fetchone()[0]
 
-    body = []
-    for r in rows:
-        link = r["link"] if (r["link"] or "").startswith("https://www.google.com/") else None
-        disc = f"{r['discount_pct']:.0f}%" if r["discount_pct"] else ""
-        anchor = f'<a href="{escape(link)}" target=_blank>open</a>' if link else ""
-        body.append(
-            "<tr>"
-            f"<td>{escape(r['origin'])} &rarr; {escape(r['dest'])} <small>{escape(r['dest_name'] or '')}</small></td>"
-            f"<td>{r['start_date']} &rarr; {r['end_date']} <small>({r['nights']}n)</small></td>"
-            f"<td><b>${r['price']:,.0f}</b></td><td>${r['low']:,.0f}</td>"
-            f"<td>{'$' + format(r['average_price'], ',.0f') if r['average_price'] else ''}</td><td>{disc}</td>"
-            f"<td>{escape(r['airline'] or '')} <small>{r['stops']} stop(s)</small></td>"
-            f"<td>{r['observed_at'][:16].replace('T', ' ')}</td><td>{r['n']}</td>"
-            f"<td>{anchor}</td></tr>"
+    recurring = db.execute(
+        """SELECT origin, dest, start_date, end_date, itinerary_type, COUNT(*) AS n
+           FROM observations GROUP BY origin, dest, start_date, end_date, itinerary_type
+           HAVING COUNT(*) > 1 ORDER BY n DESC LIMIT 6"""
+    ).fetchall()
+    trends = {}
+    for item in recurring:
+        key = (item["origin"], item["dest"], item["start_date"], item["end_date"], item["itinerary_type"])
+        label = (f"{item['origin']}->{item['dest']} {item['start_date']} "
+                 f"({item['itinerary_type']}, {item['n']} obs.)")
+        values = db.execute(
+            """SELECT observed_at, price FROM observations
+               WHERE origin=? AND dest=? AND start_date=? AND end_date=? AND itinerary_type=?
+               ORDER BY observed_at, id""",
+            key,
+        ).fetchall()
+        trends[label] = [(datetime.fromisoformat(row["observed_at"]), row["price"]) for row in values]
+
+    latest_scans = db.execute(
+        """SELECT s.* FROM scan_runs s JOIN (
+             SELECT origin, MAX(id) AS id FROM scan_runs GROUP BY origin
+           ) latest ON latest.id=s.id ORDER BY s.origin"""
+    ).fetchall()
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    request_count = db.execute(
+        "SELECT COUNT(*) FROM api_requests WHERE requested_at LIKE ?", (f"{current_month}%",)
+    ).fetchone()[0]
+    request_budget = int(__import__("os").environ.get("SERPAPI_MONTHLY_BUDGET", "250"))
+    alerts = db.execute(
+        "SELECT * FROM alerts ORDER BY alerted_at DESC LIMIT 30"
+    ).fetchall()
+
+    option_rows = []
+    for row in rows:
+        link = row["verified_link"] or row["link"]
+        link_html = f'<a href="{esc(link)}" target="_blank" rel="noopener">inspect</a>' if link else ""
+        route = (f"{row['origin']} → {row['dest']}" if row["itinerary_type"] != "open_jaw"
+                 else f"{row['origin']} → {row['dest'].replace('/', ' / ')} → {row['origin']}")
+        verified = f"${row['verified_price']:,.0f}" if row["verified_price"] is not None else "not verified"
+        airlines = row["verified_airline"] or row["airline"] or "—"
+        stops = row["verified_stops"] if row["verified_stops"] is not None else row["stops"]
+        stop_text = f"{stops} stop(s)" if stops is not None else "unknown stops"
+        pto = (
+            f"~{row['pto_weekdays']}-{row['pto_weekdays_max']} weekdays (approx.)"
+            if row["pto_weekdays"] is not None else "—"
         )
-    html = f"""<!doctype html><meta charset=utf-8><title>Japan flights</title>
-<style>body{{font:14px system-ui;margin:24px}}table{{border-collapse:collapse}}th,td{{padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:left}}
-th{{background:#f3f4f6}}small{{color:#6b7280}}</style>
-<h1>Japan flights</h1><p>{len(rows)} itineraries, {runs} runs. Prices are per person. Generated {datetime.now():%Y-%m-%d %H:%M}.</p>
-<h2>Cheapest fare per run</h2>{chart(series)}
-<h2>Itineraries (cheapest latest price first)</h2>
-<table><tr><th>Route<th>Dates<th>Latest<th>Lowest seen<th>Typical<th>Below typical<th>Airline<th>Last seen<th>Obs.<th>Link</tr>{''.join(body)}</table>"""
+        option_rows.append(
+            f"<tr><td>{esc(route)}<small>{esc(row['dest_name'])}</small></td>"
+            f"<td>{esc(row['start_date'])} → {esc(row['end_date'])}<small>{row['nights']} nights</small></td>"
+            f"<td>${row['price']:,.0f}<small>scout / person</small></td>"
+            f"<td><b>{verified}</b><small>verified search / person</small></td>"
+            f"<td>${row['low']:,.0f}</td><td>{esc(airlines)}<small>{stop_text}</small></td>"
+            f"<td>{pto}</td><td>{row['n']}</td><td>{link_html}</td></tr>"
+        )
+
+    scan_rows = "".join(
+        f"<tr><td>{esc(row['origin'])}</td><td>{esc(row['status'])}</td>"
+        f"<td>{row['raw_results']}</td><td>{row['valid_results']}</td>"
+        f"<td>{esc(row['observed_at'])}</td><td>{esc(row['error'])}</td></tr>"
+        for row in latest_scans
+    )
+    alert_rows = "".join(
+        f"<tr><td>{esc(row['alerted_at'])}</td><td>{esc(row['origin'])} → {esc(row['dest'])}</td>"
+        f"<td>{esc(row['start_date'])} → {esc(row['end_date'])}</td>"
+        f"<td>${row['verified_price']:,.0f}/person</td><td>{esc(row['reasons'])}</td></tr>"
+        if row["verified_price"] is not None else
+        f"<tr><td>{esc(row['alerted_at'])}</td><td>{esc(row['origin'])} → {esc(row['dest'])}</td>"
+        f"<td>{esc(row['start_date'])} → {esc(row['end_date'])}</td>"
+        f"<td>Legacy alert (${row['price']:,.0f})</td><td>reason not recorded</td></tr>"
+        for row in alerts
+    )
+    count = db.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+    generated = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    html = f"""<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Japan flight tracker</title>
+<style>
+body{{font:15px system-ui,sans-serif;margin:20px;color:#172033}}h1,h2{{margin-bottom:.4em}}
+.muted,small{{color:#667085}}small{{display:block}}section{{margin:28px 0}}
+.table-wrap{{overflow-x:auto}}table{{border-collapse:collapse;width:100%;min-width:850px}}
+th,td{{padding:8px 10px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}}
+th{{background:#f3f4f6;position:sticky;top:0}}.chart svg{{width:100%;max-width:900px}}
+.chart text{{font-size:11px;fill:#475467}}.legend{{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;font-size:12px}}
+.status{{padding:2px 7px;border-radius:8px;background:#eef2ff}}a{{color:#175cd3}}
+</style>
+<h1>Japan flight tracker</h1>
+<p class="muted">{count} historical observations. Generated {generated}. Monthly SerpApi calls: {request_count}/{request_budget}.</p>
+<p>Historical scout observations are not live fares. Only rows with a verified-search price were checked in a detailed Google Flights search;
+that search is not a booking guarantee. PTO figures count weekdays from itinerary dates and are approximate because actual flight times
+and international date-line arrivals are unavailable.</p>
+<section><h2>Latest scan status</h2><div class="table-wrap"><table><thead><tr><th>Origin</th><th>Status</th>
+<th>Raw</th><th>Valid Japan</th><th>Scanned</th><th>Error</th></tr></thead><tbody>{scan_rows}</tbody></table></div></section>
+<section><h2>Current or latest observed options</h2><p class="muted">Rows are the latest stored observation per itinerary, not a live availability feed.</p>
+<div class="table-wrap"><table><thead><tr><th>Route</th><th>Dates</th><th>Scout</th><th>Verified</th>
+<th>Lowest recorded</th><th>Airline / stops</th><th>PTO estimate</th><th>Obs.</th><th>Link</th></tr></thead>
+<tbody>{''.join(option_rows)}</tbody></table></div></section>
+<section><h2>Repeated itinerary price trends</h2>{chart(trends)}</section>
+<section><h2>Deal-alert history</h2><div class="table-wrap"><table><thead><tr><th>Sent</th><th>Route</th>
+<th>Dates</th><th>Verified price</th><th>Reason</th></tr></thead><tbody>{alert_rows}</tbody></table></div></section>
+</html>"""
     OUT.write_text(html, encoding="utf-8")
+    db.close()
     print(f"Wrote {OUT}")
     if "--no-open" not in sys.argv:
         webbrowser.open(OUT.as_uri())
