@@ -25,7 +25,19 @@ jobs:
         env:
           SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          SERPAPI_MONTHLY_BUDGET: ${{ vars.SERPAPI_MONTHLY_BUDGET || '250' }}
+          SERPAPI_VERIFY_RESERVE: ${{ vars.SERPAPI_VERIFY_RESERVE || '40' }}
+          MAX_VERIFICATIONS_PER_RUN: ${{ vars.MAX_VERIFICATIONS_PER_RUN || '6' }}
+          OPEN_JAW_SEARCHES_PER_RUN: ${{ vars.OPEN_JAW_SEARCHES_PER_RUN || '1' }}
+          VERIFY_PRICE_TOLERANCE: ${{ vars.VERIFY_PRICE_TOLERANCE || '50' }}
+          EXCEPTIONAL_PRICE_PREMIUM: ${{ vars.EXCEPTIONAL_PRICE_PREMIUM || '75' }}
+          PRICE_DROP_AMOUNT: ${{ vars.PRICE_DROP_AMOUNT || '100' }}
+          TWO_STOP_PENALTY: ${{ vars.TWO_STOP_PENALTY || '15' }}
+          PTO_MAX_WEEKDAYS: ${{ vars.PTO_MAX_WEEKDAYS || '10' }}
+          PREFERRED_RETURN_BY: ${{ vars.PREFERRED_RETURN_BY || '2027-04-15' }}
+          LATE_RETURN_PENALTY: ${{ vars.LATE_RETURN_PENALTY || '10' }}
       - name: Persist price history
+        if: always()
         run: |
           git config user.name "flight-tracker"
           git config user.email "flight-tracker@users.noreply.github.com"
