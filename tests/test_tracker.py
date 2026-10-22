@@ -269,7 +269,8 @@ class TrackerTests(unittest.TestCase):
                         self.assertEqual(tracker.main(), 1)
                 db = sqlite3.connect(tracker.DB_PATH)
                 self.assertEqual(
-                    db.execute("SELECT COUNT(*) FROM scan_runs WHERE status='error'").fetchone()[0], 3
+                    db.execute("SELECT COUNT(*) FROM scan_runs WHERE status='error'").fetchone()[0],
+                    len(tracker.ORIGINS)
                 )
                 db.close()
 
@@ -292,6 +293,9 @@ class TrackerTests(unittest.TestCase):
                 }):
                     with patch("tracker.requests.get", side_effect=[
                         api_response({"deals": [scout_result]}),
+                        api_response({"deals": []}),
+                        api_response({"deals": []}),
+                        api_response({"deals": []}),
                         api_response({"deals": []}),
                         api_response({"deals": []}),
                         requests.Timeout("verification offline"),
@@ -324,6 +328,9 @@ class TrackerTests(unittest.TestCase):
                 }):
                     with patch("tracker.requests.get", side_effect=[
                         api_response({"deals": [scout_result]}),
+                        api_response({"deals": []}),
+                        api_response({"deals": []}),
+                        api_response({"deals": []}),
                         api_response({"deals": []}),
                         api_response({"deals": []}),
                         api_response(high_verified),
@@ -367,8 +374,14 @@ class TrackerTests(unittest.TestCase):
             api_response({"deals": [scout_result]}),
             api_response({"deals": []}),
             api_response({"deals": []}),
+            api_response({"deals": []}),
+            api_response({"deals": []}),
+            api_response({"deals": []}),
             api_response(verified_result),
             api_response({"deals": [scout_result]}),
+            api_response({"deals": []}),
+            api_response({"deals": []}),
+            api_response({"deals": []}),
             api_response({"deals": []}),
             api_response({"deals": []}),
         ]
@@ -432,6 +445,9 @@ class TrackerTests(unittest.TestCase):
                 }):
                     with patch("tracker.requests.get", side_effect=[
                         api_response({"deals": [high_scout, low_scout]}),
+                        api_response({"deals": []}),
+                        api_response({"deals": []}),
+                        api_response({"deals": []}),
                         api_response({"deals": []}),
                         api_response({"deals": []}),
                         api_response(verified_result),

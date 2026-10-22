@@ -1,6 +1,6 @@
 # Japan flight tracker
 
-Scouts Google Flights Deals via SerpApi for PNS, TPA, and MCO to Japan, for departures
+Scouts Google Flights Deals via SerpApi for PNS, TPA, MCO, MIA, ATL, and IAH to Japan, for departures
 March 20–April 10, 2027 and trips of 12–16 nights. It preserves every scout observation in
 `data/prices.db`, verifies only promising results through the detailed Google Flights API,
 and sends at most three high-signal ntfy alerts per run. GitHub Actions continues to run
@@ -8,7 +8,7 @@ twice daily.
 
 ## Alert rules and ranking
 
-- Per-person target fares are **$900 from PNS** and **$850 from TPA/MCO**.
+- Per-person target fares are **$900 from PNS** and **$850 from TPA, MCO, MIA, ATL, and IAH**.
 - A fare slightly above its airport target can qualify when it is within the configured
   premium and has an exceptional price drop or discount. A 20% discount is shown as a
   reason, but does not by itself qualify an expensive fare.
@@ -67,7 +67,7 @@ ranked lower rather than discarded.
 | `LATE_RETURN_PENALTY` | `10` | Ranking penalty for returning after the preferred date. |
 
 The default budget allows up to 210 scout requests and reserves up to 40 requests for
-verification. The existing three-origin schedule uses up to 180 scout requests per
+verification. The existing six-origin schedule uses up to 360 scout requests per
 30-day month. Actual monthly usage depends on optional verifications and multi-city
 searches; scouts and verifications together can never exceed the hard budget. At the cap,
 the tracker records and reports budget-skipped origins rather than making extra calls.

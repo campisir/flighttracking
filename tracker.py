@@ -9,7 +9,7 @@ from pathlib import Path
 import requests
 
 SERPAPI_URL = "https://serpapi.com/search.json"
-ORIGINS = ["PNS", "TPA", "MCO"]
+ORIGINS = ["PNS", "TPA", "MCO", "MIA", "ATL", "IAH"]
 JAPAN_HUBS = ("HND", "NRT", "KIX", "NGO", "FUK")
 DEPART_FROM = date(2027, 3, 20)
 DEPART_TO = date(2027, 4, 10)
