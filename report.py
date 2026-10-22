@@ -122,14 +122,23 @@ def main() -> int:
             f"~{row['pto_weekdays']}-{row['pto_weekdays_max']} weekdays (approx.)"
             if row["pto_weekdays"] is not None else "—"
         )
+        best_price = row["verified_price"] if row["verified_price"] is not None else row["price"]
         option_rows.append(
-            f"<tr><td>{esc(route)}<small>{esc(row['dest_name'])}</small></td>"
+            f'<tr data-start="{esc(row["start_date"])}" data-best="{best_price:.0f}" '
+            f'data-label="{esc(f"{route} · ${best_price:,.0f}/person · {airlines} · {stop_text}")}">'
+            f"<td>{esc(route)}<small>{esc(row['dest_name'])}</small></td>"
             f"<td>{esc(row['start_date'])} → {esc(row['end_date'])}<small>{row['nights']} nights</small></td>"
             f"<td>${row['price']:,.0f}<small>scout / person</small></td>"
             f"<td><b>{verified}</b><small>verified search / person</small></td>"
             f"<td>${row['low']:,.0f}</td><td>{esc(airlines)}<small>{stop_text}</small></td>"
             f"<td>{pto}</td><td>{row['n']}</td><td>{link_html}</td></tr>"
         )
+
+    departure_days = sorted({row["start_date"] for row in rows})
+    day_options = "".join(
+        f'<option value="{esc(day)}">{datetime.fromisoformat(day):%a %b %d, %Y}</option>'
+        for day in departure_days
+    )
 
     scan_rows = "".join(
         f"<tr><td>{esc(row['origin'])}</td><td>{esc(row['status'])}</td>"
@@ -149,6 +158,36 @@ def main() -> int:
     )
     count = db.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
     generated = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    day_filter_script = """<script>
+(function () {
+  var sel = document.getElementById("day-filter");
+  var rows = document.querySelectorAll("#options tbody tr");
+  var banner = document.getElementById("best-deal");
+  function apply() {
+    var day = sel.value;
+    var bestPrice = Infinity, bestLabel = "";
+    rows.forEach(function (tr) {
+      var match = !day || tr.getAttribute("data-start") === day;
+      tr.style.display = match ? "" : "none";
+      if (match && day) {
+        var price = parseFloat(tr.getAttribute("data-best"));
+        if (!isNaN(price) && price < bestPrice) {
+          bestPrice = price;
+          bestLabel = tr.getAttribute("data-label");
+        }
+      }
+    });
+    if (day && bestLabel) {
+      banner.textContent = "Best deal for " + sel.options[sel.selectedIndex].text + ": " + bestLabel;
+      banner.hidden = false;
+    } else {
+      banner.hidden = true;
+    }
+  }
+  sel.addEventListener("change", apply);
+  apply();
+})();
+</script>"""
     html = f"""<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Japan flight tracker</title>
@@ -160,6 +199,9 @@ th,td{{padding:8px 10px;border-bottom:1px solid #e5e7eb;text-align:left;vertical
 th{{background:#f3f4f6;position:sticky;top:0}}.chart svg{{width:100%;max-width:900px}}
 .chart text{{font-size:11px;fill:#475467}}.legend{{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;font-size:12px}}
 .status{{padding:2px 7px;border-radius:8px;background:#eef2ff}}a{{color:#175cd3}}
+.filter-bar{{display:flex;align-items:center;gap:10px;margin:8px 0}}
+select{{font:inherit;padding:6px 8px;border:1px solid #cbd5e1;border-radius:6px}}
+.best-deal{{margin:10px 0;padding:10px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px}}
 </style>
 <h1>Japan flight tracker</h1>
 <p class="muted">{count} historical observations. Generated {generated}. Monthly SerpApi calls: {request_count}/{request_budget}.</p>
@@ -168,13 +210,17 @@ that search is not a booking guarantee. PTO figures count weekdays from itinerar
 and international date-line arrivals are unavailable.</p>
 <section><h2>Latest scan status</h2><div class="table-wrap"><table><thead><tr><th>Origin</th><th>Status</th>
 <th>Raw</th><th>Valid Japan</th><th>Scanned</th><th>Error</th></tr></thead><tbody>{scan_rows}</tbody></table></div></section>
-<section><h2>Current or latest observed options</h2><p class="muted">Rows are the latest stored observation per itinerary, not a live availability feed.</p>
-<div class="table-wrap"><table><thead><tr><th>Route</th><th>Dates</th><th>Scout</th><th>Verified</th>
+<section><h2>Find the best deal by departure day</h2><p class="muted">Pick a departure day to see every itinerary leaving that day, ranked cheapest first. Rows are the latest stored observation per itinerary, not a live availability feed.</p>
+<div class="filter-bar"><label for="day-filter" class="muted">Departure day:</label>
+<select id="day-filter"><option value="">All departure days</option>{day_options}</select></div>
+<p id="best-deal" class="best-deal" hidden></p>
+<div class="table-wrap"><table id="options"><thead><tr><th>Route</th><th>Dates</th><th>Scout</th><th>Verified</th>
 <th>Lowest recorded</th><th>Airline / stops</th><th>PTO estimate</th><th>Obs.</th><th>Link</th></tr></thead>
 <tbody>{''.join(option_rows)}</tbody></table></div></section>
 <section><h2>Repeated itinerary price trends</h2>{chart(trends)}</section>
 <section><h2>Deal-alert history</h2><div class="table-wrap"><table><thead><tr><th>Sent</th><th>Route</th>
 <th>Dates</th><th>Verified price</th><th>Reason</th></tr></thead><tbody>{alert_rows}</tbody></table></div></section>
+{day_filter_script}
 </html>"""
     OUT.write_text(html, encoding="utf-8")
     db.close()
