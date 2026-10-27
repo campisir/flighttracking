@@ -104,7 +104,8 @@ def main() -> int:
                 observed_text = str(observed)
 
         option_rows.append(
-            f'<tr data-start="{esc(row["start_date"])}" '
+            f'<tr data-start="{esc(row["start_date"])}" data-origin="{esc(row["origin"])}" '
+            f'data-dest="{esc(row["dest"])}" data-nights="{row["nights"]}" '
             f'data-best="{best_price if best_price is not None else 0:.0f}" '
             f'data-observed="{observed_epoch}" '
             f'data-label="{esc(f"{route} · ${best_price:,.0f}/person · {airlines} · {stop_text}")}">'
@@ -122,6 +123,12 @@ def main() -> int:
         f'<option value="{esc(day)}">{datetime.fromisoformat(day):%a %b %d, %Y}</option>'
         for day in departure_days
     )
+    origins = sorted({row["origin"] for row in rows})
+    dests = sorted({row["dest"] for row in rows})
+    nights = sorted({row["nights"] for row in rows if row["nights"] is not None})
+    origin_options = "".join(f'<option value="{esc(o)}">{esc(o)}</option>' for o in origins)
+    dest_options = "".join(f'<option value="{esc(d)}">{esc(d)}</option>' for d in dests)
+    nights_options = "".join(f'<option value="{n}">{n} nights</option>' for n in nights)
 
     scan_rows = "".join(
         f"<tr><td>{esc(row['origin'])}</td><td>{esc(row['status'])}</td>"
@@ -141,14 +148,23 @@ def main() -> int:
   var pageInfo = document.getElementById("page-info");
   var prevBtn = document.getElementById("prev-page");
   var nextBtn = document.getElementById("next-page");
+  var originSel = document.getElementById("origin-filter");
+  var destSel = document.getElementById("dest-filter");
+  var nightsSel = document.getElementById("nights-filter");
   var PAGE_SIZE = 25;
   var page = 0;
   function apply() {
     var day = sel.value;
     var sort = sortSel.value;
+    var origin = originSel.value;
+    var dest = destSel.value;
+    var nights = nightsSel.value;
     var bestPrice = Infinity, bestLabel = "";
     var matched = rows.filter(function (tr) {
-      var ok = !day || tr.getAttribute("data-start") === day;
+      var ok = (!day || tr.getAttribute("data-start") === day) &&
+               (!origin || tr.getAttribute("data-origin") === origin) &&
+               (!dest || tr.getAttribute("data-dest") === dest) &&
+               (!nights || tr.getAttribute("data-nights") === nights);
       if (ok && day) {
         var price = parseFloat(tr.getAttribute("data-best"));
         if (!isNaN(price) && price < bestPrice) {
@@ -185,6 +201,9 @@ def main() -> int:
   }
   sel.addEventListener("change", function () { page = 0; apply(); });
   sortSel.addEventListener("change", function () { page = 0; apply(); });
+  originSel.addEventListener("change", function () { page = 0; apply(); });
+  destSel.addEventListener("change", function () { page = 0; apply(); });
+  nightsSel.addEventListener("change", function () { page = 0; apply(); });
   prevBtn.addEventListener("click", function () { page -= 1; apply(); });
   nextBtn.addEventListener("click", function () { page += 1; apply(); });
   apply();
@@ -201,7 +220,7 @@ th,td{{padding:8px 10px;border-bottom:1px solid #e5e7eb;text-align:left;vertical
 th{{background:#f3f4f6;position:sticky;top:0}}.chart svg{{width:100%;max-width:900px}}
 .chart text{{font-size:11px;fill:#475467}}.legend{{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;font-size:12px}}
 .status{{padding:2px 7px;border-radius:8px;background:#eef2ff}}a{{color:#175cd3}}
-.filter-bar{{display:flex;align-items:center;gap:10px;margin:8px 0}}
+.filter-bar{{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:8px 0}}
 select{{font:inherit;padding:6px 8px;border:1px solid #cbd5e1;border-radius:6px}}
 .best-deal{{margin:10px 0;padding:10px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px}}
 .pager{{display:flex;align-items:center;gap:10px;margin:8px 0}}
@@ -215,8 +234,14 @@ is a detailed round-trip fare with a booking link, labeled with its seller (airl
 fares can be bait pricing — fares far below the calendar price are not shown as bookable.</p>
 <section><h2>Latest scan status</h2><div class="table-wrap"><table><thead><tr><th>Origin</th><th>Status</th>
 <th>Raw</th><th>Valid</th><th>Scanned</th><th>Error</th></tr></thead><tbody>{scan_rows}</tbody></table></div></section>
-<section><h2>Find the best deal by departure day</h2><p class="muted">Pick a departure day to see every itinerary leaving that day. The "Observed" column shows when each fare was last pulled. Use Sort to put the most recently pulled flights first.</p>
-<div class="filter-bar"><label for="day-filter" class="muted">Departure day:</label>
+<section><h2>Find the best deal by departure day</h2><p class="muted">Filter by departure airport, arrival airport, number of nights, or departure day. The "Observed" column shows when each fare was last pulled. Use Sort to put the most recently pulled flights first.</p>
+<div class="filter-bar"><label for="origin-filter" class="muted">From:</label>
+<select id="origin-filter"><option value="">All airports</option>{origin_options}</select>
+<label for="dest-filter" class="muted">To:</label>
+<select id="dest-filter"><option value="">All airports</option>{dest_options}</select>
+<label for="nights-filter" class="muted">Nights:</label>
+<select id="nights-filter"><option value="">Any</option>{nights_options}</select>
+<label for="day-filter" class="muted">Departure day:</label>
 <select id="day-filter"><option value="">All departure days</option>{day_options}</select>
 <label for="sort-select" class="muted">Sort:</label>
 <select id="sort-select"><option value="price">Cheapest first</option><option value="newest">Most recently pulled first</option></select></div>
