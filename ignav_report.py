@@ -1,0 +1,205 @@
+"""Build the mobile-friendly HTML report for the Ignav tracker (data/ignav.db)."""
+import sqlite3
+import sys
+import webbrowser
+from datetime import datetime, timezone
+from html import escape
+
+from ignav_tracker import DB_PATH, init_db
+from report import chart
+
+OUT = DB_PATH.parent / "ignav_report.html"
+
+LATEST = """
+SELECT * FROM (
+  SELECT *,
+    ROW_NUMBER() OVER w AS rn,
+    MIN(price) OVER (PARTITION BY origin, dest, start_date, end_date) AS low,
+    COUNT(*) OVER (PARTITION BY origin, dest, start_date, end_date) AS n
+  FROM observations
+  WINDOW w AS (
+    PARTITION BY origin, dest, start_date, end_date
+    ORDER BY observed_at DESC, id DESC
+  )
+) WHERE rn = 1 ORDER BY COALESCE(verified_price, price, 999999999), price
+"""
+
+
+def esc(value) -> str:
+    return escape(str(value)) if value is not None else ""
+
+
+def main() -> int:
+    if not DB_PATH.exists():
+        print(f"No database at {DB_PATH}. Run ignav_tracker.py first.")
+        return 1
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+    init_db(db)
+    rows = db.execute(LATEST).fetchall()
+
+    recurring = db.execute(
+        """SELECT origin, dest, start_date, end_date, COUNT(*) AS n
+           FROM observations GROUP BY origin, dest, start_date, end_date
+           HAVING COUNT(*) > 1 ORDER BY n DESC LIMIT 6"""
+    ).fetchall()
+    trends = {}
+    for item in recurring:
+        key = (item["origin"], item["dest"], item["start_date"], item["end_date"])
+        label = f"{item['origin']}->{item['dest']} {item['start_date']} ({item['n']} obs.)"
+        values = db.execute(
+            """SELECT observed_at, COALESCE(verified_price, price) AS price
+               FROM observations
+               WHERE origin=? AND dest=? AND start_date=? AND end_date=?
+               ORDER BY observed_at, id""",
+            key,
+        ).fetchall()
+        trends[label] = [
+            (datetime.fromisoformat(row["observed_at"]), row["price"])
+            for row in values if row["price"] is not None
+        ]
+
+    latest_scans = db.execute(
+        """SELECT s.* FROM scan_runs s JOIN (
+             SELECT origin, MAX(id) AS id FROM scan_runs GROUP BY origin
+           ) latest ON latest.id=s.id ORDER BY s.origin"""
+    ).fetchall()
+
+    option_rows = []
+    for row in rows:
+        booking = row["booking_link"]
+        link_html = (
+            f'<a href="{esc(booking)}" target="_blank" rel="noopener">book</a>'
+            if booking else ""
+        )
+        route = f"{row['origin']} → {row['dest']}"
+        verified = f"${row['verified_price']:,.0f}" if row["verified_price"] is not None else "not verified"
+        airlines = row["verified_airline"] or "—"
+        stops = row["verified_stops"]
+        stop_text = f"{stops} stop(s)" if stops is not None else "unknown stops"
+        best_price = row["verified_price"] if row["verified_price"] is not None else row["price"]
+        price_text = f"${row['price']:,.0f}" if row["price"] is not None else "—"
+
+        observed = row["observed_at"]
+        observed_text, observed_epoch = "—", ""
+        if observed:
+            try:
+                observed_dt = datetime.fromisoformat(observed).astimezone()
+                observed_text = observed_dt.strftime("%b %d %H:%M")
+                observed_epoch = f"{observed_dt.timestamp():.0f}"
+            except ValueError:
+                observed_text = str(observed)
+
+        option_rows.append(
+            f'<tr data-start="{esc(row["start_date"])}" '
+            f'data-best="{best_price if best_price is not None else 0:.0f}" '
+            f'data-observed="{observed_epoch}" '
+            f'data-label="{esc(f"{route} · ${best_price:,.0f}/person · {airlines} · {stop_text}")}">'
+            f"<td>{esc(route)}</td>"
+            f"<td>{esc(row['start_date'])} → {esc(row['end_date'])}<small>{row['nights']} nights</small></td>"
+            f"<td>{esc(observed_text)}</td>"
+            f"<td>{price_text}<small>{esc(row['price_status'] or '')} / person</small></td>"
+            f"<td><b>{verified}</b><small>verified search / person</small></td>"
+            f"<td>{airlines}<small>{stop_text}</small></td>"
+            f"<td>${row['low']:,.0f}</td><td>{row['n']}</td><td>{link_html}</td></tr>"
+        )
+
+    departure_days = sorted({row["start_date"] for row in rows if row["start_date"]})
+    day_options = "".join(
+        f'<option value="{esc(day)}">{datetime.fromisoformat(day):%a %b %d, %Y}</option>'
+        for day in departure_days
+    )
+
+    scan_rows = "".join(
+        f"<tr><td>{esc(row['origin'])}</td><td>{esc(row['status'])}</td>"
+        f"<td>{row['raw_results']}</td><td>{row['valid_results']}</td>"
+        f"<td>{esc(row['observed_at'])}</td><td>{esc(row['error'])}</td></tr>"
+        for row in latest_scans
+    )
+    count = db.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+    generated = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    filter_script = """<script>
+(function () {
+  var sel = document.getElementById("day-filter");
+  var sortSel = document.getElementById("sort-select");
+  var tbody = document.querySelector("#options tbody");
+  var rows = Array.prototype.slice.call(document.querySelectorAll("#options tbody tr"));
+  var banner = document.getElementById("best-deal");
+  function apply() {
+    var day = sel.value;
+    var sort = sortSel.value;
+    var bestPrice = Infinity, bestLabel = "";
+    rows.forEach(function (tr) {
+      var match = !day || tr.getAttribute("data-start") === day;
+      tr.style.display = match ? "" : "none";
+      if (match && day) {
+        var price = parseFloat(tr.getAttribute("data-best"));
+        if (!isNaN(price) && price < bestPrice) {
+          bestPrice = price;
+          bestLabel = tr.getAttribute("data-label");
+        }
+      }
+    });
+    var visible = rows.filter(function (tr) { return tr.style.display !== "none"; });
+    visible.sort(function (a, b) {
+      if (sort === "newest") {
+        return (parseFloat(b.getAttribute("data-observed")) || 0) - (parseFloat(a.getAttribute("data-observed")) || 0);
+      }
+      return (parseFloat(a.getAttribute("data-best")) || 0) - (parseFloat(b.getAttribute("data-best")) || 0);
+    });
+    visible.forEach(function (tr) { tbody.appendChild(tr); });
+    if (day && bestLabel) {
+      banner.textContent = "Best deal for " + sel.options[sel.selectedIndex].text + ": " + bestLabel;
+      banner.hidden = false;
+    } else {
+      banner.hidden = true;
+    }
+  }
+  sel.addEventListener("change", apply);
+  sortSel.addEventListener("change", apply);
+  apply();
+})();
+</script>"""
+    html = f"""<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ignav flight tracker</title>
+<style>
+body{{font:15px system-ui,sans-serif;margin:20px;color:#172033}}h1,h2{{margin-bottom:.4em}}
+.muted,small{{color:#667085}}small{{display:block}}section{{margin:28px 0}}
+.table-wrap{{overflow-x:auto}}table{{border-collapse:collapse;width:100%;min-width:850px}}
+th,td{{padding:8px 10px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}}
+th{{background:#f3f4f6;position:sticky;top:0}}.chart svg{{width:100%;max-width:900px}}
+.chart text{{font-size:11px;fill:#475467}}.legend{{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;font-size:12px}}
+.status{{padding:2px 7px;border-radius:8px;background:#eef2ff}}a{{color:#175cd3}}
+.filter-bar{{display:flex;align-items:center;gap:10px;margin:8px 0}}
+select{{font:inherit;padding:6px 8px;border:1px solid #cbd5e1;border-radius:6px}}
+.best-deal{{margin:10px 0;padding:10px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px}}
+</style>
+<h1>Ignav flight tracker</h1>
+<p class="muted">{count} historical observations. Generated {generated}. Source: Ignav API (ignav.com).</p>
+<p>Fares come from the Ignav API and are not live booking guarantees. "Verified" rows were checked with a detailed
+round-trip search; "unverified" rows are calendar-only cheapest-date fares. Book links are direct airline/OTA URLs.</p>
+<section><h2>Latest scan status</h2><div class="table-wrap"><table><thead><tr><th>Origin</th><th>Status</th>
+<th>Raw</th><th>Valid</th><th>Scanned</th><th>Error</th></tr></thead><tbody>{scan_rows}</tbody></table></div></section>
+<section><h2>Find the best deal by departure day</h2><p class="muted">Pick a departure day to see every itinerary leaving that day. The "Observed" column shows when each fare was last pulled. Use Sort to put the most recently pulled flights first.</p>
+<div class="filter-bar"><label for="day-filter" class="muted">Departure day:</label>
+<select id="day-filter"><option value="">All departure days</option>{day_options}</select>
+<label for="sort-select" class="muted">Sort:</label>
+<select id="sort-select"><option value="price">Cheapest first</option><option value="newest">Most recently pulled first</option></select></div>
+<p id="best-deal" class="best-deal" hidden></p>
+<div class="table-wrap"><table id="options"><thead><tr><th>Route</th><th>Dates</th><th>Observed</th><th>Price</th><th>Verified</th>
+<th>Airline / stops</th><th>Lowest recorded</th><th>Obs.</th><th>Book</th></tr></thead>
+<tbody>{''.join(option_rows)}</tbody></table></div></section>
+<section><h2>Repeated itinerary price trends</h2>{chart(trends)}</section>
+{filter_script}
+</html>"""
+    OUT.write_text(html, encoding="utf-8")
+    db.close()
+    print(f"Wrote {OUT}")
+    if "--no-open" not in sys.argv:
+        webbrowser.open(OUT.as_uri())
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

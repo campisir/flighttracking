@@ -2,3 +2,4 @@ __pycache__/
 .venv/
 .env
 data/report.html
+data/ignav_report.html

@@ -116,3 +116,32 @@ pull the latest repository history before generating a local report.
 
 Schema changes are applied with additive SQLite migrations. Existing observations and
 alerts are not rewritten or deleted.
+
+## Ignav tracker (second data source)
+
+A separate tracker sources live fares from the [Ignav API](https://ignav.com) alongside
+the SerpApi/Google Flights tracker, so the two can be compared. Run `python ignav_tracker.py`
+to fetch fares into `data/ignav.db`, then `python ignav_report.py` to build
+`data/ignav_report.html`.
+
+Ignav has no "Japan deals" feed and no country filter, so the tracker enumerates
+destination airports and queries Ignav's `cheapest-dates` endpoint for each
+origin/destination/stay-length. That returns a price for every departure day in the window
+(no coverage gaps), which the SerpApi deals feed cannot guarantee. The cheapest observations
+per run are then enriched with a round-trip search (verified price, airline, stops) and a
+booking-link lookup that produces direct airline/OTA URLs.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `IGNAT_API_KEY` | — | Required API key from ignav.com (sent as `X-Api-Key`). |
+| `IGNAT_DEPART_FROM` / `IGNAT_DEPART_TO` | `2027-03-20` / `2027-04-10` | Departure window. |
+| `IGNAT_MIN_NIGHTS` / `IGNAT_MAX_NIGHTS` | `12` / `16` | Stay lengths scanned. |
+| `IGNAT_DESTINATIONS` | `HND,NRT,KIX,NGO,FUK,OKA` | Comma-separated Japan airport codes. |
+| `IGNAT_ENRICH_COUNT` | `5` | Cheapest observations per run to verify in detail. |
+| `IGNAT_MAX_STOPS` | `2` | Maximum stops filter. |
+
+Pricing is usage-based: 1,000 free requests, then $2 per 1,000 successful requests, with no
+monthly minimum or rate limit. The full sweep above is 6 origins × 6 destinations × 5 stay
+lengths = 180 requests per run, so the twice-daily schedule costs roughly $19–20/month after
+the free tier. Set `IGNAT_API_KEY` as a repository secret and any overrides as repository
+variables; the workflow runs the Ignav tracker and report after the SerpApi tracker.
