@@ -4,6 +4,7 @@ import sys
 import webbrowser
 from datetime import datetime, timezone
 from html import escape
+from urllib.parse import quote
 
 from ignav_tracker import DB_PATH, init_db
 from report import chart
@@ -72,6 +73,12 @@ def main() -> int:
             f'<a href="{esc(booking)}" target="_blank" rel="noopener">book</a>'
             if booking else ""
         )
+        gf_url = (
+            "https://www.google.com/travel/flights?q=" +
+            quote(f"Flights to {row['dest']} from {row['origin']} "
+                  f"on {row['start_date']} through {row['end_date']}")
+        )
+        gf_html = f'<a href="{esc(gf_url)}" target="_blank" rel="noopener">check</a>'
         route = f"{row['origin']} → {row['dest']}"
         bookable = f"${row['verified_price']:,.0f}" if row["verified_price"] is not None else "—"
         provider = row["booking_provider"] or ""
@@ -107,7 +114,7 @@ def main() -> int:
             f"<td>{price_text}<small>{esc(row['price_status'] or '')} / person</small></td>"
             f"<td><b>{bookable}</b><small>{esc(provider_note)}</small></td>"
             f"<td>{airlines}<small>{stop_text}</small></td>"
-            f"<td>${row['low']:,.0f}</td><td>{row['n']}</td><td>{link_html}</td></tr>"
+            f"<td>${row['low']:,.0f}</td><td>{row['n']}</td><td>{link_html}</td><td>{gf_html}</td></tr>"
         )
 
     departure_days = sorted({row["start_date"] for row in rows if row["start_date"]})
@@ -216,7 +223,7 @@ fares can be bait pricing — fares far below the calendar price are not shown a
 <div class="pager"><button id="prev-page" type="button">← Prev</button><span id="page-info" class="muted"></span><button id="next-page" type="button">Next →</button></div>
 <p id="best-deal" class="best-deal" hidden></p>
 <div class="table-wrap"><table id="options"><thead><tr><th>Route</th><th>Dates</th><th>Observed</th><th>Price</th><th>Bookable</th>
-<th>Airline / stops</th><th>Lowest recorded</th><th>Obs.</th><th>Book</th></tr></thead>
+<th>Airline / stops</th><th>Lowest recorded</th><th>Obs.</th><th>Book</th><th>Google</th></tr></thead>
 <tbody>{''.join(option_rows)}</tbody></table></div></section>
 <section><h2>Repeated itinerary price trends</h2>{chart(trends)}</section>
 {filter_script}
