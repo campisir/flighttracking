@@ -52,6 +52,12 @@ ENRICH_COUNT = int(os.environ.get("IGNAT_ENRICH_COUNT", 5))
 MAX_STOPS = int(os.environ.get("IGNAT_MAX_STOPS", 2))
 MARKET = os.environ.get("IGNAT_MARKET", "US")
 ADULTS = int(os.environ.get("IGNAT_ADULTS", 1))
+# Reject "bookable" fares this far below the calendar fare: extreme lowball fares
+# from third-party OTAs (e.g. HolidayBreakz) are bait pricing, not real deals.
+MAX_BOOKABLE_DISCOUNT = float(os.environ.get("IGNAT_MAX_BOOKABLE_DISCOUNT", 0.15))
+# Also drop "bookable" fares this far above the calendar fare: the calendar price is
+# then the better deal signal, so the row stays calendar-only.
+MAX_BOOKABLE_PREMIUM = float(os.environ.get("IGNAT_MAX_BOOKABLE_PREMIUM", 0.25))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS observations (
@@ -71,7 +77,9 @@ CREATE TABLE IF NOT EXISTS observations (
     verified_cabin_class TEXT,
     verified_duration_minutes INTEGER,
     ignav_id TEXT,
-    booking_link TEXT
+    booking_link TEXT,
+    booking_provider TEXT,
+    booking_provider_type TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ignav_itin ON observations (origin, dest, start_date, end_date);
 CREATE TABLE IF NOT EXISTS scan_runs (
@@ -101,8 +109,21 @@ def post(path: str, body: dict) -> dict:
         return json.load(response)
 
 
+MIGRATIONS = {
+    "observations": {
+        "booking_provider": "TEXT",
+        "booking_provider_type": "TEXT",
+    },
+}
+
+
 def init_db(db: sqlite3.Connection) -> None:
     db.executescript(SCHEMA)
+    for table, columns in MIGRATIONS.items():
+        existing = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+        for column, kind in columns.items():
+            if column not in existing:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
     db.commit()
 
 
@@ -142,6 +163,37 @@ def booking_links(ignav_id: str) -> list[dict]:
         for link in option.get("links", []):
             links.append(link)
     return links
+
+
+def choose_booking_link(links: list[dict]) -> tuple[str | None, str | None, str | None]:
+    """Prefer an airline-direct link over third-party OTAs."""
+    if not links:
+        return None, None, None
+    for link in links:
+        if link.get("provider_type") == "airline":
+            return link.get("url"), link.get("provider_name"), link.get("provider_type")
+    link = links[0]
+    return link.get("url"), link.get("provider_name"), link.get("provider_type")
+
+
+def bookable_discount(calendar_price: float, verified_price: float) -> float:
+    """Fractional drop of the bookable fare below the calendar fare (0 if none)."""
+    if calendar_price:
+        return max(0.0, (calendar_price - verified_price) / calendar_price)
+    return 0.0
+
+
+def bookable_premium(calendar_price: float, verified_price: float) -> float:
+    """Fractional excess of the bookable fare above the calendar fare (0 if none)."""
+    if calendar_price:
+        return max(0.0, (verified_price - calendar_price) / calendar_price)
+    return 0.0
+
+
+def bookable_within_band(calendar_price: float, verified_price: float) -> bool:
+    """True when a bookable fare is close enough to the calendar fare to trust."""
+    return (bookable_discount(calendar_price, verified_price) <= MAX_BOOKABLE_DISCOUNT
+            and bookable_premium(calendar_price, verified_price) <= MAX_BOOKABLE_PREMIUM)
 
 
 def summarize(itinerary: dict) -> dict:
@@ -273,19 +325,35 @@ def main() -> int:
                 continue
             top = itineraries[0]
             summary = summarize(top)
-            booking_link = None
+            verified_price = summary["price"]
+            if not isinstance(verified_price, (int, float)):
+                continue
+            discount = bookable_discount(row["price"] or 0, verified_price)
+            premium = bookable_premium(row["price"] or 0, verified_price)
+            if not bookable_within_band(row["price"] or 0, verified_price):
+                if discount > MAX_BOOKABLE_DISCOUNT:
+                    print(f"Skipping {row['origin']}->{row['dest']} {row['start_date']}: "
+                          f"bookable ${verified_price:,.0f} is {discount:.0%} below the calendar "
+                          f"${row['price']:,.0f} (possible OTA bait fare)", file=sys.stderr)
+                else:
+                    print(f"Skipping {row['origin']}->{row['dest']} {row['start_date']}: "
+                          f"bookable ${verified_price:,.0f} is {premium:.0%} above the calendar "
+                          f"${row['price']:,.0f} (calendar fare is the better deal)", file=sys.stderr)
+                continue
+            booking_link, provider, provider_type = None, None, None
             if summary.get("ignav_id"):
-                links = booking_links(summary["ignav_id"])
-                if links:
-                    booking_link = links[0].get("url")
+                booking_link, provider, provider_type = choose_booking_link(
+                    booking_links(summary["ignav_id"])
+                )
             db.execute(
                 """UPDATE observations SET
                    verified_price=?, verified_airline=?, verified_stops=?,
-                   verified_cabin_class=?, verified_duration_minutes=?, ignav_id=?, booking_link=?
+                   verified_cabin_class=?, verified_duration_minutes=?, ignav_id=?,
+                   booking_link=?, booking_provider=?, booking_provider_type=?
                    WHERE id=?""",
-                (summary["price"], summary["airline"], summary["stops"],
+                (verified_price, summary["airline"], summary["stops"],
                  summary["cabin_class"], summary["duration_minutes"], summary["ignav_id"],
-                 booking_link, row["id"]),
+                 booking_link, provider, provider_type, row["id"]),
             )
             enriched += 1
         except Exception as exc:  # noqa: BLE001 - enrichment is best-effort

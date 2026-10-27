@@ -73,7 +73,13 @@ def main() -> int:
             if booking else ""
         )
         route = f"{row['origin']} → {row['dest']}"
-        verified = f"${row['verified_price']:,.0f}" if row["verified_price"] is not None else "not verified"
+        bookable = f"${row['verified_price']:,.0f}" if row["verified_price"] is not None else "—"
+        provider = row["booking_provider"] or ""
+        provider_type = row["booking_provider_type"] or ""
+        provider_note = (
+            f"{provider} ({provider_type})" if provider else
+            ("no booking link" if row["verified_price"] is not None else "")
+        )
         airlines = row["verified_airline"] or "—"
         stops = row["verified_stops"]
         stop_text = f"{stops} stop(s)" if stops is not None else "unknown stops"
@@ -99,7 +105,7 @@ def main() -> int:
             f"<td>{esc(row['start_date'])} → {esc(row['end_date'])}<small>{row['nights']} nights</small></td>"
             f"<td>{esc(observed_text)}</td>"
             f"<td>{price_text}<small>{esc(row['price_status'] or '')} / person</small></td>"
-            f"<td><b>{verified}</b><small>verified search / person</small></td>"
+            f"<td><b>{bookable}</b><small>{esc(provider_note)}</small></td>"
             f"<td>{airlines}<small>{stop_text}</small></td>"
             f"<td>${row['low']:,.0f}</td><td>{row['n']}</td><td>{link_html}</td></tr>"
         )
@@ -125,29 +131,44 @@ def main() -> int:
   var tbody = document.querySelector("#options tbody");
   var rows = Array.prototype.slice.call(document.querySelectorAll("#options tbody tr"));
   var banner = document.getElementById("best-deal");
+  var pageInfo = document.getElementById("page-info");
+  var prevBtn = document.getElementById("prev-page");
+  var nextBtn = document.getElementById("next-page");
+  var PAGE_SIZE = 25;
+  var page = 0;
   function apply() {
     var day = sel.value;
     var sort = sortSel.value;
     var bestPrice = Infinity, bestLabel = "";
-    rows.forEach(function (tr) {
-      var match = !day || tr.getAttribute("data-start") === day;
-      tr.style.display = match ? "" : "none";
-      if (match && day) {
+    var matched = rows.filter(function (tr) {
+      var ok = !day || tr.getAttribute("data-start") === day;
+      if (ok && day) {
         var price = parseFloat(tr.getAttribute("data-best"));
         if (!isNaN(price) && price < bestPrice) {
           bestPrice = price;
           bestLabel = tr.getAttribute("data-label");
         }
       }
+      return ok;
     });
-    var visible = rows.filter(function (tr) { return tr.style.display !== "none"; });
-    visible.sort(function (a, b) {
+    matched.sort(function (a, b) {
       if (sort === "newest") {
         return (parseFloat(b.getAttribute("data-observed")) || 0) - (parseFloat(a.getAttribute("data-observed")) || 0);
       }
       return (parseFloat(a.getAttribute("data-best")) || 0) - (parseFloat(b.getAttribute("data-best")) || 0);
     });
-    visible.forEach(function (tr) { tbody.appendChild(tr); });
+    var totalPages = Math.max(1, Math.ceil(matched.length / PAGE_SIZE));
+    if (page >= totalPages) { page = totalPages - 1; }
+    if (page < 0) { page = 0; }
+    var start = page * PAGE_SIZE;
+    rows.forEach(function (tr) { tr.style.display = "none"; });
+    matched.forEach(function (tr) { tbody.appendChild(tr); });
+    matched.slice(start, start + PAGE_SIZE).forEach(function (tr) { tr.style.display = ""; });
+    pageInfo.textContent = matched.length
+      ? "Showing " + (start + 1) + "-" + Math.min(start + PAGE_SIZE, matched.length) + " of " + matched.length + " (page " + (page + 1) + " of " + totalPages + ")"
+      : "No matching flights";
+    prevBtn.disabled = page === 0;
+    nextBtn.disabled = page >= totalPages - 1;
     if (day && bestLabel) {
       banner.textContent = "Best deal for " + sel.options[sel.selectedIndex].text + ": " + bestLabel;
       banner.hidden = false;
@@ -155,8 +176,10 @@ def main() -> int:
       banner.hidden = true;
     }
   }
-  sel.addEventListener("change", apply);
-  sortSel.addEventListener("change", apply);
+  sel.addEventListener("change", function () { page = 0; apply(); });
+  sortSel.addEventListener("change", function () { page = 0; apply(); });
+  prevBtn.addEventListener("click", function () { page -= 1; apply(); });
+  nextBtn.addEventListener("click", function () { page += 1; apply(); });
   apply();
 })();
 </script>"""
@@ -174,11 +197,15 @@ th{{background:#f3f4f6;position:sticky;top:0}}.chart svg{{width:100%;max-width:9
 .filter-bar{{display:flex;align-items:center;gap:10px;margin:8px 0}}
 select{{font:inherit;padding:6px 8px;border:1px solid #cbd5e1;border-radius:6px}}
 .best-deal{{margin:10px 0;padding:10px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px}}
+.pager{{display:flex;align-items:center;gap:10px;margin:8px 0}}
+.pager button{{font:inherit;padding:5px 10px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer}}
+.pager button:disabled{{opacity:.5;cursor:default}}
 </style>
 <h1>Ignav flight tracker</h1>
 <p class="muted">{count} historical observations. Generated {generated}. Source: Ignav API (ignav.com).</p>
-<p>Fares come from the Ignav API and are not live booking guarantees. "Verified" rows were checked with a detailed
-round-trip search; "unverified" rows are calendar-only cheapest-date fares. Book links are direct airline/OTA URLs.</p>
+<p>Fares come from the Ignav API and are not live booking guarantees. "Price" is the calendar cheapest-date fare; "Bookable"
+is a detailed round-trip fare with a booking link, labeled with its seller (airline or third-party OTA). Third-party OTA
+fares can be bait pricing — fares far below the calendar price are not shown as bookable.</p>
 <section><h2>Latest scan status</h2><div class="table-wrap"><table><thead><tr><th>Origin</th><th>Status</th>
 <th>Raw</th><th>Valid</th><th>Scanned</th><th>Error</th></tr></thead><tbody>{scan_rows}</tbody></table></div></section>
 <section><h2>Find the best deal by departure day</h2><p class="muted">Pick a departure day to see every itinerary leaving that day. The "Observed" column shows when each fare was last pulled. Use Sort to put the most recently pulled flights first.</p>
@@ -186,8 +213,9 @@ round-trip search; "unverified" rows are calendar-only cheapest-date fares. Book
 <select id="day-filter"><option value="">All departure days</option>{day_options}</select>
 <label for="sort-select" class="muted">Sort:</label>
 <select id="sort-select"><option value="price">Cheapest first</option><option value="newest">Most recently pulled first</option></select></div>
+<div class="pager"><button id="prev-page" type="button">← Prev</button><span id="page-info" class="muted"></span><button id="next-page" type="button">Next →</button></div>
 <p id="best-deal" class="best-deal" hidden></p>
-<div class="table-wrap"><table id="options"><thead><tr><th>Route</th><th>Dates</th><th>Observed</th><th>Price</th><th>Verified</th>
+<div class="table-wrap"><table id="options"><thead><tr><th>Route</th><th>Dates</th><th>Observed</th><th>Price</th><th>Bookable</th>
 <th>Airline / stops</th><th>Lowest recorded</th><th>Obs.</th><th>Book</th></tr></thead>
 <tbody>{''.join(option_rows)}</tbody></table></div></section>
 <section><h2>Repeated itinerary price trends</h2>{chart(trends)}</section>
