@@ -22,6 +22,7 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: python tracker.py
+        continue-on-error: true
         env:
           SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
@@ -37,6 +38,7 @@ jobs:
           PREFERRED_RETURN_BY: ${{ vars.PREFERRED_RETURN_BY || '2027-04-15' }}
           LATE_RETURN_PENALTY: ${{ vars.LATE_RETURN_PENALTY || '10' }}
       - run: python ignav_tracker.py
+        continue-on-error: true
         env:
           IGNAT_API_KEY: ${{ secrets.IGNAT_API_KEY }}
           IGNAT_DEPART_FROM: ${{ vars.IGNAT_DEPART_FROM || '2027-03-20' }}

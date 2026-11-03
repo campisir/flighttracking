@@ -98,12 +98,18 @@ Optional variables can be set in the same PowerShell session, e.g.
 
 ### GitHub Actions
 
-Add repository secrets `SERPAPI_KEY` and `NTFY_TOPIC`. The workflow at
-`.github/workflows/track.yml` runs twice daily and persists the SQLite database.
-Optional configuration can be added as repository variables with the names in the table
+Add repository secrets `SERPAPI_KEY`, `NTFY_TOPIC`, and `IGNAT_API_KEY`. The workflow at
+`.github/workflows/track.yml` runs twice daily and persists the SQLite databases.
+Optional configuration can be added as repository variables with the names in the tables
 above; defaults are used otherwise. A run with API failures for every origin fails. A
 partial failure is logged and the remaining origins are still processed. Legitimate
 zero-result searches remain successful scans.
+
+The two trackers run independently: the SerpApi step and the Ignav step both use
+`continue-on-error`, so a failure in one (for example SerpApi returning HTTP 429 when its
+plan allowance is exhausted) does not stop the other tracker, the report generation, or
+the history commit. Failures are still visible in the run log and in each database's
+`scan_runs` table.
 
 ### Reports and history
 
